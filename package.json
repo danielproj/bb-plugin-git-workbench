@@ -8,7 +8,7 @@
   },
   "bb": {
     "name": "Git Workbench",
-    "description": "A Git workbench with commit graph, staging, diffs, branches, remotes, stash and worktree operations.",
+    "description": "Git workbench with staging, history and GitHub pull request reviews, checks and guarded merge controls.",
     "branding": {
       "icon": "GitBranch"
     },
@@ -17,12 +17,12 @@
     "host": "./host.ts"
   },
   "dependencies": {
+    "@get-bb/plugin-sdk": "0.6.132",
     "@radix-ui/react-checkbox": "^1.4.1",
     "@radix-ui/react-slot": "^1.5.0",
     "zod": "^4.6.5"
   },
   "devDependencies": {
-    "@get-bb/plugin-sdk": "0.6.132",
     "@pierre/diffs": "~1.2.12",
     "@radix-ui/react-alert-dialog": "^1.2.1",
     "@radix-ui/react-context-menu": "^2.4.1",
@@ -57,7 +57,7 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "build": "bb plugin build",
-    "test": "tsx --test git.test.ts picker.test.tsx"
+    "test": "tsx --test catalog.test.ts git.test.ts picker.test.tsx repositories.test.ts pr.test.ts pull-requests.test.tsx view-cache.test.ts background-view.test.tsx checks.test.tsx clone.test.ts clone-dialog.test.tsx"
   },
   "repository": {
     "type": "git",

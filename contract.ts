@@ -1,5 +1,9 @@
+import { snapshot, querySchema as query, readSchema as read, readResultSchema as result, repositorySchema, gitIdentitySchema, scanResultSchema, catalogSchema } from "./read-contract";
+export * from "./read-contract";
+import { prRpc, prHostRpc } from './pr-contract';
 import { defineRpcContract } from "@get-bb/plugin-sdk";
 import { z } from "zod";
+import { cloneRequest, cloneOptionsSchema, cloneJobSchema } from "./clone-contract";
 export const actions = [
   "stage",
   "unstage",
@@ -9,6 +13,7 @@ export const actions = [
   "pull",
   "push",
   "checkout",
+  "checkout-remote",
   "branch-create",
   "branch-delete",
   "branch-rename",
@@ -49,71 +54,27 @@ export const operation = z.object({
   confirmed: z.boolean().default(false),
 });
 export type Operation = z.infer<typeof operation>;
-const file = z.object({
-  path: z.string(),
-  original: z.string().optional(),
-  index: z.string(),
-  worktree: z.string(),
-  conflict: z.boolean(),
+export const checkoutSetupSchema = z.object({
+  status: z.enum(["preparing", "ready", "failed"]),
+  message: z.string(),
+  repositories: z.array(repositorySchema),
 });
-const commit = z.object({
-  sha: z.string(),
-  parents: z.array(z.string()),
-  subject: z.string(),
-  author: z.string(),
-  date: z.string(),
-  refs: z.string(),
-});
-export type Commit = z.infer<typeof commit>;
-export const snapshot = z.object({
-  root: z.string(),
-  branch: z.string(),
-  upstream: z.string(),
-  ahead: z.number(),
-  behind: z.number(),
-  files: z.array(file),
-  commits: z.array(commit),
-  refs: z.array(
-    z.object({
-      name: z.string(),
-      kind: z.string(),
-      current: z.boolean(),
-      upstream: z.string(),
-    }),
-  ),
-  stashes: z.array(z.object({ ref: z.string(), subject: z.string() })),
-  remotes: z.string(),
-  worktrees: z.string(),
-  operation: z.string(),
-});
-export type Snapshot = z.infer<typeof snapshot>;
-const read = z.object({
-  kind: z.enum([
-    "diff",
-    "commit",
-    "commit-files",
-    "blame",
-    "history",
-    "reflog",
-    "stash",
-  ]),
-  value: z.string().default(""),
-  path: z.string().default(""),
-  staged: z.boolean().default(false),
-  ignoreWhitespace: z.boolean().default(false),
-});
-export type Read = z.infer<typeof read>;
-const result = z.object({ text: z.string(), truncated: z.boolean() });
-const query = z.object({
-  search: z.string().max(200).default(""),
-  branch: z.string().max(500).default(""),
-  author: z.string().max(200).default(""),
-  path: z.string().max(4096).default(""),
-  since: z.string().max(40).default(""),
-  limit: z.number().int().min(10).max(2000).default(200),
-});
-export type Query = z.infer<typeof query>;
+export type CheckoutSetup = z.infer<typeof checkoutSetupSchema>;
 export const hostContract = defineRpcContract({
+  ...prHostRpc,
+  cloneDirectory: {input:z.object({}),output:z.object({directory:z.string()})},
+  cloneRepository: {input:cloneRequest.pick({path:true,remoteUrl:true}),output:gitIdentitySchema},
+  verifyClone: {input:z.object({identity:gitIdentitySchema,remoteUrl:cloneRequest.shape.remoteUrl}),output:gitIdentitySchema},
+  scanRepositories: { input: z.object({ roots: z.array(z.string()).max(1000) }), output: scanResultSchema },
+  gitIdentity: { input: z.object({ path: z.string() }), output: gitIdentitySchema },
+  restoreCheckout: {
+    input: z.object({ path: z.string(), remoteUrl: z.string().min(1) }),
+    output: z.object({ ready: z.literal(true) }),
+  },
+  inspectCheckout: {
+    input: z.object({ path: z.string() }),
+    output: z.object({ state: z.enum(["ready", "missing", "not_git"]) }),
+  },
   resolveWorktree: {
     input: z.object({ cwd: z.string(), path: z.string() }),
     output: z.object({ cwd: z.string() }),
@@ -126,20 +87,30 @@ export const hostContract = defineRpcContract({
   },
 });
 export const rpcContract = defineRpcContract({
+  ...prRpc,
+  cloneOptions: {input:z.object({}),output:cloneOptionsSchema},
+  cloneStart: {input:cloneRequest,output:cloneJobSchema},
+  cloneStatus: {input:z.object({id:z.string().uuid()}),output:cloneJobSchema},
   projects: {
     input: z.object({}),
     output: z.array(z.object({ id: z.string(), name: z.string() })),
   },
+  catalog: {
+    input: z.object({ projectId: z.string().optional(), refresh: z.boolean().default(false) }),
+    output: catalogSchema,
+  },
   repositories: {
     input: z.object({ projectId: z.string().optional() }),
-    output: z.array(
-      z.object({
-        id: z.string(),
-        name: z.string(),
-        path: z.string(),
-        hostId: z.string(),
-      }),
-    ),
+    output: z.array(repositorySchema),
+  },
+  setupCheckout: {
+    input: z.object({
+      projectId: z.string().min(1),
+      retry: z.boolean().default(false),
+      sourceId: z.string().optional(),
+      hostId: z.string().optional(),
+    }),
+    output: checkoutSetupSchema,
   },
   snapshot: {
     input: z.object({

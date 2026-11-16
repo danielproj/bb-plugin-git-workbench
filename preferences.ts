@@ -67,3 +67,10 @@ export function restoreScope(
         : "",
   };
 }
+
+/** Exact identity or one unambiguous legacy alias; never choose a sibling. */
+export function resolveSavedRepository(rows: import('./contract').Repository[], id?: string) {
+  if (!id) return undefined;
+  const matches = rows.filter(r => r.id === id || r.legacyIds?.includes(id));
+  return matches.length === 1 ? matches[0] : undefined;
+}

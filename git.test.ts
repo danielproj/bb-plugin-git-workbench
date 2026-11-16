@@ -1,4 +1,4 @@
-import { realpath } from "node:fs/promises";
+import { realpath, stat } from "node:fs/promises";
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtemp, writeFile, readFile, rm, mkdir } from "node:fs/promises";
@@ -332,4 +332,150 @@ test("host worktree selection refuses unrelated directories and accepts linked c
     } finally {
       await h.experimental_dispose();
     }
+  }));
+
+test("host inspection recognizes Git roots and distinguishes missing and non-Git paths", () =>
+  fixture(async (cwd) => {
+    const h = experimental_createHostEntryHarness(host);
+    try {
+      assert.equal(
+        (await h.experimental_call("inspectCheckout", { path: cwd })).state,
+        "ready",
+      );
+      assert.equal(
+        (
+          await h.experimental_call("inspectCheckout", {
+            path: path.join(cwd, "absent"),
+          })
+        ).state,
+        "missing",
+      );
+      const outside = await mkdtemp(path.join(tmpdir(), "gw-not-git-"));
+      try {
+        assert.equal(
+          (await h.experimental_call("inspectCheckout", { path: outside }))
+            .state,
+          "not_git",
+        );
+      } finally {
+        await rm(outside, { recursive: true, force: true });
+      }
+    } finally {
+      await h.experimental_dispose();
+    }
+  }));
+
+test("checkout recovery clones into a missing path and preserves existing directories", () =>
+  fixture(async (cwd) => {
+    const { restoreCheckout } = await import("./checkout");
+    await writeFile(path.join(cwd, "a"), "original");
+    await git(cwd, ["add", "a"]);
+    await git(cwd, ["commit", "-m", "Base"]);
+    const target = path.join(cwd, "new-checkout");
+    await restoreCheckout(target, cwd);
+    assert.equal(await readFile(path.join(target, "a"), "utf8"), "original");
+    await writeFile(path.join(target, "a"), "local change");
+    await restoreCheckout(target, cwd);
+    assert.equal(
+      await readFile(path.join(target, "a"), "utf8"),
+      "local change",
+    );
+    const occupied = path.join(cwd, "occupied");
+    await mkdir(occupied);
+    await writeFile(path.join(occupied, "keep"), "do not touch");
+    await assert.rejects(restoreCheckout(occupied, cwd), /preserved/);
+    assert.equal(
+      await readFile(path.join(occupied, "keep"), "utf8"),
+      "do not touch",
+    );
+    const bad = path.join(cwd, "bad-remote");
+    await assert.rejects(restoreCheckout(bad, "ext::echo unsafe"), /remote/);
+    await assert.rejects(stat(bad));
+  }));
+
+test("explicit checkout protects local, ignored files, tracking names and other worktrees", () => fixture(async cwd => {
+  await writeFile(path.join(cwd,'base'),'main');
+  await git(cwd,['add','.']); await git(cwd,['commit','-m','base']);
+  await git(cwd,['branch','local']);
+  await mutateGit(cwd,op('checkout',{value:'local'}));
+  assert.equal((await getSnapshot(cwd,query)).branch,'local');
+  await git(cwd,['update-ref','refs/remotes/origin/topic','HEAD']);
+  await git(cwd,['config','remote.origin.url',cwd]);
+  await git(cwd,['config','remote.origin.fetch','+refs/heads/*:refs/remotes/origin/*']);
+  await assert.rejects(mutateGit(cwd,op('checkout',{value:'topic'})));
+  await mutateGit(cwd,op('checkout-remote',{value:'origin/topic',extra:'tracking'}));
+  assert.equal((await git(cwd,['rev-parse','--abbrev-ref','@{upstream}'])).trim(),'origin/topic');
+  await assert.rejects(mutateGit(cwd,op('checkout-remote',{value:'origin/topic',extra:'local'})));
+  await writeFile(path.join(cwd,'base'),'dirty');
+  await git(cwd,['branch','different']);
+  await git(cwd,['restore','base']);
+  await git(cwd,['switch','different']);
+  await writeFile(path.join(cwd,'base'),'different');
+  await writeFile(path.join(cwd,'ignored'),'tracked on target');
+  await git(cwd,['add','.']); await git(cwd,['commit','-m','target']);
+  await git(cwd,['switch','main']);
+  await writeFile(path.join(cwd,'base'),'dirty main');
+  await assert.rejects(mutateGit(cwd,op('checkout',{value:'different'})));
+  await git(cwd,['restore','base']);
+  await writeFile(path.join(cwd,'.gitignore'),'ignored\n');
+  await writeFile(path.join(cwd,'ignored'),'precious');
+  for(const operation of [op('checkout',{value:'different'}),op('branch-create',{value:'new',extra:'different'}),op('checkout-remote',{value:'origin/different',extra:'new-track'})]) {
+    await git(cwd,['update-ref','refs/remotes/origin/different','different']);
+    await assert.rejects(mutateGit(cwd,operation));
+    assert.equal(await readFile(path.join(cwd,'ignored'),'utf8'),'precious');
+    assert.equal((await getSnapshot(cwd,query)).branch,'main');
+  }
+  const wt=path.join(cwd,'linked');
+  await git(cwd,['worktree','add',wt,'local']);
+  await assert.rejects(mutateGit(cwd,op('checkout',{value:'local'})));
+  await mutateGit(wt,op('checkout',{value:'tracking'}));
+  assert.equal((await getSnapshot(cwd,query)).branch,'main');
+  assert.equal((await getSnapshot(wt,query)).branch,'tracking');
+}));
+test("production worktree resolver refuses a replacement Git root despite stale membership", () =>
+  fixture(async cwd => {
+    await git(cwd, ["commit", "--allow-empty", "-m", "initial"]);
+    const linked = cwd + "-linked";
+    try {
+      await git(cwd, ["worktree", "add", "-b", "linked", linked]);
+      const ctx = { signal: undefined } as any;
+      assert.equal((await host.handlers.resolveWorktree({ cwd, path: linked }, ctx)).cwd, await realpath(linked));
+      await rm(linked, { recursive: true });
+      await mkdir(linked);
+      await git(linked, ["init", "-b", "replacement"]);
+      assert.ok((await git(cwd, ["worktree", "list", "--porcelain"])).includes(linked));
+      await assert.rejects(async () => host.handlers.resolveWorktree({ cwd, path: linked }, ctx), /not part/);
+      await mkdir(path.join(linked, "sub"));
+      await assert.rejects(async () => host.handlers.resolveWorktree({ cwd, path: path.join(linked, "sub") }, ctx));
+      await rm(linked, { recursive: true });
+      await assert.rejects(async () => host.handlers.resolveWorktree({ cwd, path: linked }, ctx));
+    } finally { await rm(linked, { recursive: true, force: true }); }
+  }));
+test("all server Git and PR endpoints stop before dispatch into a replaced worktree", () =>
+  fixture(async cwd => {
+    const { default: plugin } = await import("./server");
+    await git(cwd, ["commit", "--allow-empty", "-m", "initial"]);
+    const linked = cwd + "-linked";
+    try {
+      await git(cwd, ["worktree", "add", "-b", "linked", linked]);
+      await rm(linked, { recursive: true }); await mkdir(linked);
+      await git(linked, ["init", "-b", "replacement"]);
+      const dispatched: string[] = [];
+      let handlers: any;
+      plugin({
+        sdk: { projects: { get: async () => ({ sources: [{ id: "s", hostId: "h", path: cwd }] }) } },
+        hosts: { experimental_client: () => ({ call: async (method: string, input: any) => {
+          if (method === "inspectCheckout") return { state: "ready" };
+          if (method === "resolveWorktree") return host.handlers.resolveWorktree(input, { signal: undefined } as any);
+          dispatched.push(method); throw Error("Target must not be dispatched");
+        } }) },
+        onDispose: () => {},
+        rpc: { register: (_: unknown, value: any) => { handlers = value; } },
+        realtime: { publish: () => {} },
+      } as any);
+      for (const method of ["snapshot", "read", "mutate", "prList", "prRead", "prMutate"])
+        await assert.rejects(handlers[method]({ environmentId: "source:p:s", worktreePath: linked }, {}), /not part/);
+      assert.deepEqual(dispatched, []);
+      assert.equal((await git(linked, ["branch", "--show-current"])).trim(), "replacement");
+    } finally { await rm(linked, { recursive: true, force: true }); }
   }));

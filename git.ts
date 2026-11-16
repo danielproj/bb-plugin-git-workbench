@@ -22,6 +22,7 @@ export async function git(
   signal?: AbortSignal,
   input?: string,
   allowFailure = false,
+  timeoutMs = 60000,
 ): Promise<string> {
   return new Promise((resolve, reject) => {
     const child = spawn(
@@ -59,7 +60,7 @@ export async function git(
     };
     child.stdout.on("data", append);
     child.stderr.on("data", append);
-    const timer = setTimeout(() => child.kill("SIGTERM"), 60000);
+    const timer = setTimeout(() => child.kill("SIGTERM"), timeoutMs);
     child.once("error", (e) => {
       clearTimeout(timer);
       reject(e);
@@ -373,10 +374,15 @@ export async function mutateGit(
       ];
       break;
     case "checkout":
-      a = ["switch", v()];
+      await git(cwd, ["show-ref", "--verify", `refs/heads/${v()}`], signal);
+      a = ["switch", "--no-guess", "--no-overwrite-ignore", v()];
       break;
     case "branch-create":
-      a = ["switch", "-c", v(), ...(o.extra ? [ref(o.extra)] : [])];
+      a = ["switch", "--no-overwrite-ignore", "-c", v(), ...(o.extra ? [ref(o.extra)] : [])];
+      break;
+    case "checkout-remote":
+      await git(cwd, ["show-ref", "--verify", `refs/remotes/${v()}`], signal);
+      a = ["switch", "--no-overwrite-ignore", "--track", "-c", ref(o.extra), `refs/remotes/${v()}`];
       break;
     case "branch-delete":
       a = ["branch", "-d", v()];

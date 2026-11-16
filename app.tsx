@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   definePluginApp,
   useRpc,
@@ -12,18 +12,27 @@ import type {
   Read,
   Query,
   Commit,
+  Repository,
+  SetupCandidate,
 } from "./contract";
 import { layoutGraph, diffHunks } from "./graph";
+import { PullRequests, type PrApi } from "./pull-requests";
 import { SearchPicker } from "./picker";
 import { branchOptions } from "./selection";
+import { FileTree } from "./file-tree";
 import { ChangesTree } from "./change-tree";
 import {
   readPreference,
   savePreference,
   readSelection,
   restoreScope,
+  resolveSavedRepository,
 } from "./preferences";
 import { Icon } from "./components/ui/icon";
+import { gitButtonTone } from "./action-style";
+import {CloneRepositoryDialog,type CloneApi,type CloneActivity} from './clone-dialog';
+import { snapshot, catalogSchema, readResultSchema } from "./read-contract";
+import { viewCache, cacheKey, workbenchViewSchema, syncTime, retainCatalog } from "./view-cache";
 import "./style.css";
 const emptyQuery: Query = {
   search: "",
@@ -53,6 +62,7 @@ const destructive = [
   "reset",
 ];
 const labels: Record<string, string> = {
+  "checkout-remote": "Create tracking branch",
   "branch-create": "New branch",
   "branch-delete": "Delete branch",
   "branch-rename": "Rename current branch",
@@ -77,14 +87,7 @@ const labels: Record<string, string> = {
   "cherry-pick-continue": "Continue cherry-pick",
 };
 const title = (s: string) => labels[s] || s[0]!.toUpperCase() + s.slice(1);
-const colors = [
-  "#8c77ed",
-  "#63bd91",
-  "#5ca9dd",
-  "#e7b45a",
-  "#d47bc8",
-  "#51b9b1",
-];
+const colors = ["var(--foreground)", "var(--muted-foreground)", "var(--success, var(--foreground))", "var(--warning, var(--muted-foreground))"];
 function Graph({ row }: { row: ReturnType<typeof layoutGraph>[number] }) {
   return (
     <svg
@@ -111,63 +114,19 @@ function Graph({ row }: { row: ReturnType<typeof layoutGraph>[number] }) {
   );
 }
 
-function FileTree({
-  paths,
-  selected,
-  onSelect,
-  prefix = "",
-}: {
-  paths: string[];
-  selected: string;
-  onSelect: (p: string) => void;
-  prefix?: string;
-}) {
-  const groups = new Map<string, string[]>();
-  const files: string[] = [];
-  for (const p of paths) {
-    const tail = p.slice(prefix.length);
-    const slash = tail.indexOf("/");
-    if (slash < 0) files.push(p);
-    else {
-      const dir = tail.slice(0, slash + 1);
-      groups.set(dir, [...(groups.get(dir) || []), p]);
-    }
-  }
-  return (
-    <>
-      {[...groups].map(([dir, children]) => (
-        <details open key={dir}>
-          <summary>
-            ▾ {dir.slice(0, -1)} <small>{children.length}</small>
-          </summary>
-          <div className="gw-tree-indent">
-            <FileTree
-              paths={children}
-              selected={selected}
-              onSelect={onSelect}
-              prefix={prefix + dir}
-            />
-          </div>
-        </details>
-      ))}
-      {files.map((p) => (
-        <button
-          key={p}
-          title={p}
-          className={p === selected ? "selected" : ""}
-          onClick={() => onSelect(p)}
-        >
-          ↳ {p.slice(prefix.length)}
-        </button>
-      ))}
-    </>
-  );
-}
-
-function Workbench({ environment }: { environment?: { id: string } | null }) {
+export function Workbench({ environment }: { environment?: { id: string } | null }) {
   const rpc = useRpc<typeof rpcContract>();
   const context = useBbContext();
   const [saved] = useState(readSelection);
+  const cache = viewCache();
+  const viewKey = cacheKey("workbench-view", environment?.id || "navigation");
+  const [boot] = useState(() => {
+    const catalog = cache.get(cacheKey("catalog"), catalogSchema)?.value;
+    const view = cache.get(viewKey, workbenchViewSchema)?.value;
+    const repository = resolveSavedRepository(catalog?.repositories || [], environment?.id || view?.repo || saved?.repo);
+    const restored = repository && view?.repo === repository.id ? view : undefined;
+    return {catalog, repository, view:restored};
+  });
   const [restoring, setRestoring] = useState(true);
   const [treeView, setTreeView] = useState(() =>
     readPreference(
@@ -176,62 +135,75 @@ function Workbench({ environment }: { environment?: { id: string } | null }) {
       (v): v is boolean => typeof v === "boolean",
     ),
   );
-  const [repos, setRepos] = useState<
-    { id: string; name: string; path: string; hostId: string }[]
-  >([]);
-  const [repo, setRepo] = useState(saved?.repo || environment?.id || "");
-  const [data, setData] = useState<Snapshot | null>(null);
-  const [query, setQuery] = useState(emptyQuery);
+  const [repos, setRepos] = useState<Repository[]>(boot.catalog?.repositories || []);
+  const [candidates, setCandidates] = useState<SetupCandidate[]>(boot.catalog?.setupCandidates || []);
+  const [setup, setSetup] = useState<SetupCandidate | null>(null);
+  const [warnings, setWarnings] = useState<string[]>(boot.catalog?[...boot.catalog.warnings,...(!boot.catalog.complete?["Repository discovery is incomplete."]:[])]:[]);
+  const [repo, setRepo] = useState(boot.repository?.id || "");
+  const [query, setQuery] = useState(boot.view?.query || emptyQuery);
   const [branchFilter, setBranchFilter] = useState("");
-  const [tab, setTab] = useState("Log");
-  const [file, setFile] = useState("");
-  const [staged, setStaged] = useState(false);
+  const [tab, setTab] = useState<string>(boot.view?.tab || "Log");
+  const [file, setFile] = useState(boot.view?.file || "");
+  const [staged, setStaged] = useState(boot.view?.staged || false);
   const [selected, setSelected] = useState<string[]>([]);
-  const [commit, setCommit] = useState<Commit | null>(null);
-  const [diff, setDiff] = useState("");
-  const [truncated, setTruncated] = useState(false);
-  const [view, setView] = useState<"unified" | "split">("unified");
-  const [ignoreWhitespace, setIgnoreWhitespace] = useState(false);
+  const [commit, setCommit] = useState<Commit | null>(boot.view?.commit || null);
+  const [view, setView] = useState<"unified" | "split">(boot.view?.view || "unified");
+  const [ignoreWhitespace, setIgnoreWhitespace] = useState(boot.view?.ignoreWhitespace || false);
   const [commitPaths, setCommitPaths] = useState<string[]>([]);
-  const [commitPath, setCommitPath] = useState("");
+  const [commitPath, setCommitPath] = useState(boot.view?.commitPath || "");
   const [message, setMessage] = useState("");
   const [amend, setAmend] = useState(false);
   const [error, setError] = useState("");
+  const [catalogError, setCatalogError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [cloneOpen,setCloneOpen]=useState(false),[cloneActivity,setCloneActivity]=useState<CloneActivity>('idle');
   const [loading, setLoading] = useState(false);
+  const [preparingCheckout, setPreparingCheckout] = useState(false);
+  const [checkoutMessage, setCheckoutMessage] = useState("");
+  const [checkoutRetry, setCheckoutRetry] = useState(0);
   const [dialog, setDialog] = useState<Operation | null>(null);
   const [consoleLines, setConsoleLines] = useState<string[]>([]);
-  const [detail, setDetail] = useState<Read | null>(null);
-  const [projects, setProjects] = useState<{ id: string; name: string }[]>([]);
-  const [projectId, setProjectId] = useState(
-    saved?.projectId || context.projectId || "",
-  );
-  const [worktreePath, setWorktreePath] = useState("");
+  const [detail, setDetail] = useState<Read | null>(boot.view?.detail || null);
+  const [projectId, setProjectId] = useState(boot.view?.projectId || saved?.projectId || "");
+  const [worktreePath, setWorktreePath] = useState(boot.view?.worktreePath || "");
+  const snapshotKey = cacheKey("snapshot", repo, worktreePath, query);
+  const cachedSnapshot = cache.get(snapshotKey, snapshot);
+  const [liveSnapshot, setLiveSnapshot] = useState<{key:string;value:Snapshot;updatedAt:number}|null>(null);
+  const [catalogVerified, setCatalogVerified] = useState<string[]>([]);
+  const [catalogLoading, setCatalogLoading] = useState(true);
+  const [freshSnapshot, setFreshSnapshot] = useState("");
+  const data = liveSnapshot?.key === snapshotKey ? liveSnapshot.value : cachedSnapshot?.value || null;
+  const canMutate = !!repo && catalogVerified.includes(repo) && freshSnapshot === snapshotKey;
+  const mutationReady = useRef(canMutate); mutationReady.current = canMutate;
+  const readRequest:Read|null = repo && (file || commit || detail) ? detail ?? {kind:commit?"commit":"diff",value:commit?.sha||"",path:commit?commitPath:file,staged,ignoreWhitespace} : null;
+  const previewKey = cacheKey("read", repo, worktreePath, readRequest);
+  const cachedPreview = readRequest ? cache.get(previewKey, readResultSchema) : undefined;
+  const [preview, setPreview] = useState<{key:string;text:string;truncated:boolean}|null>(null);
+  const [freshPreview, setFreshPreview] = useState("");
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const diff = !readRequest ? "" : preview?.key === previewKey ? preview.text : cachedPreview?.value.text || "";
+  const truncated = !!readRequest && (preview?.key === previewKey ? preview.truncated : cachedPreview?.value.truncated || false);
   const target = {
     environmentId: repo,
     ...(worktreePath ? { worktreePath } : {}),
   };
-  useEffect(() => {
-    let live = true;
-    rpc.call("projects", {}).then((p) => {
-      if (live) {
-        setProjects(p);
-        if (!p.some((item) => item.id === projectId))
-          setProjectId(
-            p.some((item) => item.id === context.projectId)
-              ? context.projectId!
-              : "",
-          );
-      }
-    }, report);
-    return () => {
-      live = false;
-    };
-  }, [rpc]);
+  const prRpcRef = useRef(rpc);
+  const refreshRef = useRef<()=>Promise<void>>(()=>Promise.resolve());
+  prRpcRef.current = rpc;
+  const cloneApi=useMemo<CloneApi>(()=>({options:()=>prRpcRef.current.call('cloneOptions',{}),start:input=>prRpcRef.current.call('cloneStart',input),status:id=>prRpcRef.current.call('cloneStatus',{id})}),[]);
+  const prApi = useMemo<PrApi>(() => ({list: query => prRpcRef.current.call("prList", {...target, query}), read: read => prRpcRef.current.call("prRead", {...target, read}), mutate: op => {
+    if (!mutationReady.current) return Promise.reject(Error("Wait for the repository refresh before applying an action."));
+    mutationReady.current=false;generation.current++;readGeneration.current++;
+    setFreshSnapshot("");
+    cache.invalidate(key=>{try{const [kind,id]=JSON.parse(key);return ['snapshot','read'].includes(kind)&&id===repo;}catch{return false;}});
+    return prRpcRef.current.call("prMutate", {...target, op}).finally(()=>{void refreshRef.current();});
+  }}), [repo, worktreePath]);
   useEffect(() => {
     if (!data || !repo) return;
     if (restoring) {
-      const scope = restoreScope(saved, projectId, repo, data);
+      if (freshSnapshot !== snapshotKey) return;
+      const selection = boot.view ? {...boot.view,branch:boot.view.query.branch} : saved;
+      const scope = restoreScope(selection && {...selection, repo: repos.find(r => r.id === repo)?.legacyIds?.includes(selection.repo) ? repo : selection.repo}, projectId, repo, data);
       setWorktreePath(scope.worktreePath);
       setQuery((q) => ({ ...q, branch: scope.branch }));
       setRestoring(false);
@@ -243,7 +215,10 @@ function Workbench({ environment }: { environment?: { id: string } | null }) {
       worktreePath,
       branch: query.branch,
     });
-  }, [data, repo, projectId, worktreePath, query.branch, restoring, saved]);
+  }, [data, repo, projectId, worktreePath, query.branch, restoring, saved, freshSnapshot, snapshotKey]);
+  useEffect(() => {
+    if (repo) cache.set(viewKey, {repo,projectId,worktreePath,query,tab,file,staged,commit,commitPath,detail,view,ignoreWhitespace});
+  }, [viewKey,repo,projectId,worktreePath,query,tab,file,staged,commit,commitPath,detail,view,ignoreWhitespace]);
   useEffect(() => savePreference("tree-view", treeView), [treeView]);
   const generation = useRef(0);
   const readGeneration = useRef(0);
@@ -251,48 +226,88 @@ function Workbench({ environment }: { environment?: { id: string } | null }) {
     setError(e instanceof Error ? e.message : String(e));
   useEffect(() => {
     let live = true;
-    if (!projectId) {
-      setRepos([]);
-      return;
-    }
-    rpc.call("repositories", { projectId }).then((r) => {
-      if (live) {
-        setRepos(r);
-        setRepo((current) =>
-          r.some((e) => e.id === current)
-            ? current
-            : r.find((e) => e.id === environment?.id)?.id || r[0]?.id || "",
-        );
+    setCatalogLoading(true);
+    cache.load(cacheKey("catalog"), async () => {
+      const previous=cache.get(cacheKey("catalog"),catalogSchema)?.value;
+      const current=await rpc.call("catalog", {refresh: checkoutRetry > 0});
+      return {...retainCatalog(current,previous),verifiedIds:current.repositories.map(r=>r.id)};
+    }).then(c => {
+      if (!live) return;
+      setRepos(c.repositories); setCandidates(c.setupCandidates);
+      setCatalogError("");
+      setCatalogVerified(c.verifiedIds);
+      setWarnings([...c.warnings, ...(!c.complete ? ["Repository discovery is incomplete."] : [])]);
+      if (!repo && !setup) {
+        const wanted = environment?.id || boot.view?.repo || saved?.repo;
+        const found = resolveSavedRepository(c.repositories, wanted);
+        if (found) { setRepo(found.id); setProjectId(saved?.projectId || found.projectIds?.[0] || ""); }
+        else if (wanted) setCheckoutMessage("The remembered repository is unavailable. Refresh or choose a repository.");
+      } else if (repo && c.complete && !c.repositories.some(r => r.id === repo)) {
+        generation.current++; readGeneration.current++; setRepo("");
+        setFreshSnapshot("");
+        setCheckoutMessage("The selected repository is unavailable. Refresh or choose a repository.");
       }
-    }, report);
-    return () => {
-      live = false;
+    }, e => {if(live){setCatalogVerified([]);setCatalogError(e instanceof Error?e.message:String(e));}}).finally(()=>{if(live)setCatalogLoading(false);});
+    return () => {live = false;};
+  }, [rpc, checkoutRetry]);
+  useEffect(() => {
+    if (!setup) return;
+    let live = true;
+    const run = async () => {
+      setPreparingCheckout(true);
+      try {
+        let job = await rpc.call("setupCheckout", {...setup, retry: true});
+        while (live && job.status === "preparing") {
+          setCheckoutMessage(job.message);
+          await new Promise(resolve => setTimeout(resolve, 800));
+          if (!live) return;
+          job = await rpc.call("setupCheckout", {...setup, retry: false});
+        }
+        if (!live) return;
+        if (job.status === "failed") throw Error(job.message);
+        const c = await rpc.call("catalog", {projectId: setup.projectId, refresh: true});
+        if (!live) return;
+        const ids = job.repositories.map(r => r.id);
+        const matches = c.repositories.filter(r => ids.includes(r.id) || r.legacyIds?.some(id => ids.includes(id)));
+        setSetup(null); setCheckoutRetry(v => v + 1);
+        if (matches.length === 1) {setRepo(matches[0]!.id); setProjectId(setup.projectId); setCheckoutMessage("");}
+        else setCheckoutMessage("Checkout prepared. Choose its repository above.");
+      } catch(e) {if (live) {report(e); setCheckoutMessage(String(e));}}
+      finally {if (live) setPreparingCheckout(false);}
     };
-  }, [rpc, projectId, environment?.id]);
+    void run();
+    return () => {live = false;};
+  }, [rpc, setup]);
   const refresh = async () => {
     if (!repo) return;
     const id = ++generation.current;
     setLoading(true);
     try {
-      const d = await rpc.call("snapshot", { ...target, query });
+      const d = await cache.load(snapshotKey, () => rpc.call("snapshot", { ...target, query }));
       if (id === generation.current) {
-        setData(d);
+        setLiveSnapshot({key:snapshotKey,value:d,updatedAt:Date.now()});
+        setFreshSnapshot(snapshotKey);
         setError("");
         setSelected((s) => s.filter((p) => d.files.some((f) => f.path === p)));
       }
     } catch (e) {
-      if (id === generation.current) report(e);
+      if (id === generation.current) {setFreshSnapshot("");report(e);}
     } finally {
       if (id === generation.current) setLoading(false);
     }
   };
+  refreshRef.current = refresh;
+  const lastTarget = useRef(cacheKey("target", repo, worktreePath));
   useEffect(() => {
-    setData(null);
+    const key = cacheKey("target", repo, worktreePath);
+    if (lastTarget.current === key) return;
+    lastTarget.current = key;
+    setLiveSnapshot(null); setFreshSnapshot("");
     setLoading(false);
     setFile("");
     setCommit(null);
     setDetail(null);
-    setDiff("");
+    setPreview(null);
     setSelected([]);
     setMessage("");
     setAmend(false);
@@ -313,30 +328,28 @@ function Workbench({ environment }: { environment?: { id: string } | null }) {
     return () => clearInterval(timer);
   }, [repo, worktreePath, query, busy, rpc]);
   useEffect(() => {
+    const resume = () => {if(!document.hidden){setCheckoutRetry(v=>v+1);void refresh();}};
+    window.addEventListener("focus", resume); document.addEventListener("visibilitychange", resume);
+    return () => {window.removeEventListener("focus", resume);document.removeEventListener("visibilitychange", resume);};
+  }, [repo,worktreePath,query,rpc]);
+  useEffect(() => {
     const id = ++readGeneration.current;
     if (!repo || (!file && !commit && !detail)) {
-      setDiff("");
+      setPreviewLoading(false);
       return;
     }
-    setDiff("");
-    const r: Read = detail ?? {
-      kind: commit ? "commit" : "diff",
-      value: commit?.sha || "",
-      path: commit ? commitPath : file,
-      staged,
-      ignoreWhitespace,
-    };
-    rpc.call("read", { ...target, read: r }).then(
+    setPreviewLoading(true);setFreshPreview("");
+    cache.load(previewKey, () => rpc.call("read", { ...target, read: readRequest! })).then(
       (d) => {
         if (id === readGeneration.current) {
-          setDiff(d.text);
-          setTruncated(d.truncated);
+          setPreview({key:previewKey,text:d.text,truncated:d.truncated});
+          setFreshPreview(previewKey);
         }
       },
       (e) => {
         if (id === readGeneration.current) report(e);
       },
-    );
+    ).finally(()=>{if(id===readGeneration.current)setPreviewLoading(false);});
     return () => {
       readGeneration.current++;
     };
@@ -352,22 +365,23 @@ function Workbench({ environment }: { environment?: { id: string } | null }) {
     data,
     rpc,
   ]);
+  const previousCommit = useRef(commit?.sha);
   useEffect(() => {
     let live = true;
-    setCommitPaths([]);
-    setCommitPath("");
-    if (commit)
-      rpc
-        .call("read", {
-          ...target,
-          read: {
+    if (previousCommit.current !== commit?.sha) setCommitPath("");
+    previousCommit.current = commit?.sha;
+    const request:Read = {
             kind: "commit-files",
-            value: commit.sha,
+            value: commit?.sha || "",
             path: "",
             staged: false,
             ignoreWhitespace: false,
-          },
-        })
+    };
+    const key=cacheKey("read",repo,worktreePath,request);
+    const cached=commit?cache.get(key,readResultSchema):undefined;
+    try{const paths:unknown=JSON.parse(cached?.value.text||"[]");setCommitPaths(Array.isArray(paths)&&paths.every(p=>typeof p==='string')?paths:[]);}catch{setCommitPaths([]);}
+    if (commit)
+      cache.load(key, () => rpc.call("read", {...target,read:request}))
         .then((r) => {
           if (live) {
             const paths: unknown = JSON.parse(r.text);
@@ -384,7 +398,11 @@ function Workbench({ environment }: { environment?: { id: string } | null }) {
   }, [repo, worktreePath, commit, rpc]);
   async function execute(op: Operation) {
     if (busy) return;
+    if (!canMutate || !mutationReady.current) {report(Error("Wait for the repository refresh before applying an action."));return;}
+    mutationReady.current=false;generation.current++;readGeneration.current++;
     setBusy(true);
+    setFreshSnapshot("");
+    cache.invalidate(key=>{try{const [kind,id]=JSON.parse(key);return ['snapshot','read'].includes(kind)&&id===repo;}catch{return false;}});
     setError("");
     try {
       const r = await rpc.call("mutate", { ...target, op });
@@ -417,6 +435,14 @@ function Workbench({ environment }: { environment?: { id: string } | null }) {
   ) {
     setDialog({ ...baseOp, action, value, extra, paths });
   }
+  function openClonedRepository(repository:Repository,createdProjectId:string){
+    mutationReady.current=false;generation.current++;readGeneration.current++;
+    cache.invalidate(key=>{try{return JSON.parse(key)[0]==='catalog';}catch{return false;}});
+    setRepos(old=>[...old.filter(r=>r.id!==repository.id),repository]);
+    setCatalogVerified(old=>[...old.filter(id=>id!==repository.id),repository.id]);
+    setRestoring(false);setSetup(null);setRepo(repository.id);setProjectId(createdProjectId);setWorktreePath('');setQuery(emptyQuery);setTab('Log');
+    setFreshSnapshot('');setError('');setCheckoutMessage('');setCheckoutRetry(v=>v+1);
+  }
   function quick(action: Operation["action"], paths: string[] = []) {
     void execute({ ...baseOp, action, paths });
   }
@@ -434,8 +460,9 @@ function Workbench({ environment }: { environment?: { id: string } | null }) {
     onClick: () => void,
     icon?: string,
     disabled = false,
+    readOnly = false,
   ) => (
-    <button disabled={disabled || busy || !repo} onClick={onClick}>
+    <button className={`gw-action-${gitButtonTone(label)}`} disabled={disabled || busy || !repo || (!readOnly && !canMutate)} onClick={onClick}>
       {icon && <Icon name={icon} className="gw-icon" />}
       {label}
     </button>
@@ -543,30 +570,25 @@ function Workbench({ environment }: { environment?: { id: string } | null }) {
           <span className="gw-pill">{data?.branch || "Repository"}</span>
         </div>
         <SearchPicker
-          label="Project"
-          placeholder="Choose project…"
-          value={projectId}
+          label="Repository"
+          placeholder="Choose repository…"
+          value={repo || setup?.id || ""}
           disabled={busy}
-          options={projects.map((p) => ({
-            id: p.id,
-            label: p.name,
-            detail: "",
-            group: "Projects",
-          }))}
+          options={[
+            ...repos.map(r => ({id:r.id, label:r.name, detail:`${r.path} · ${r.hostName || r.hostId}${!catalogLoading&&!catalogVerified.includes(r.id)?" · Last seen":""}`, group:`${r.projectNames?.join(", ") || "Repositories"} · ${r.hostName || r.hostId}`})),
+            ...candidates.map(c => ({id:c.id, label:`${c.name} · Prepare checkout`, detail:`${c.path || "Clone configured remote"} · ${c.hostName}`, group:`${c.projectName} · ${c.hostName}`}))
+          ]}
           onChange={(id) => {
-            if (id === projectId) return;
-            setRestoring(false);
-            generation.current++;
-            readGeneration.current++;
-            setProjectId(id);
-            setRepo("");
-            setRepos([]);
-            setWorktreePath("");
-            setQuery(emptyQuery);
-            setData(null);
-            setError("");
+            if (id === repo) return;
+            generation.current++; readGeneration.current++;
+            setRestoring(false); setRepo(""); setWorktreePath(""); setQuery(emptyQuery);
+            setBranchFilter(""); setConsoleLines([]); setLiveSnapshot(null); setFreshSnapshot(""); setDialog(null); setFile(""); setCommit(null); setDetail(null); setPreview(null); setSelected([]); setCommitPaths([]); setCommitPath(""); setError(""); setCheckoutMessage("");
+            const candidate = candidates.find(c => c.id === id);
+            setSetup(candidate || null);
+            if (!candidate) {const r = repos.find(r => r.id === id); if (r) {setRepo(r.id); setProjectId(r.projectIds?.[0] || "");}}
           }}
         />
+        <button className="gw-action-review" disabled={busy||preparingCheckout} onClick={()=>setCloneOpen(true)}><Icon name="Download" className="gw-icon"/>{cloneActivity==='working'?'Cloning…':cloneActivity==='ready'?'Open cloned repository…':cloneActivity==='attention'?'Clone progress…':'Clone repository…'}</button>
         <SearchPicker
           label="Branch or worktree"
           visibilityKey="branch-groups"
@@ -579,33 +601,9 @@ function Workbench({ environment }: { environment?: { id: string } | null }) {
                 ? `worktree:${data.root}`
                 : ""
           }
-          options={
-            data
-              ? [
-                  ...branchOptions(data),
-                  ...repos
-                    .filter(
-                      (r) =>
-                        r.id !== repo &&
-                        !branchOptions(data).some(
-                          (o) => o.id === `worktree:${r.path}`,
-                        ),
-                    )
-                    .map((r) => ({
-                      id: `checkout:${r.id}`,
-                      label: r.name,
-                      detail: r.path,
-                      group: "Other checkouts",
-                    })),
-                ]
-              : []
-          }
+          options={data ? branchOptions(data) : []}
           onChange={(id) => {
-            if (id.startsWith("checkout:")) {
-              setRepo(id.slice(9));
-              setWorktreePath("");
-              setQuery(emptyQuery);
-            } else if (id.startsWith("worktree:")) {
+            if (id.startsWith("worktree:")) {
               setWorktreePath(id.slice(9));
               setQuery({ ...query, branch: "" });
             } else {
@@ -614,31 +612,42 @@ function Workbench({ environment }: { environment?: { id: string } | null }) {
             }
           }}
         />
+        {btn("Checkout…", () => action("checkout", data?.refs.find(r => r.kind === "heads" && r.current)?.name || ""), "GitBranch", !data)}
         <div className="gw-spacer" />
         {btn(
           loading ? "Refreshing…" : "Refresh",
-          () => void refresh(),
+          () => {setCheckoutRetry(v => v + 1); void refresh();},
           "RefreshCw",
+          false,
+          true,
         )}
         {btn("Fetch", () => quick("fetch"), "Download")}
         {btn("Pull", () => action("pull"), "ArrowDown")}
         {btn("Push", () => action("push"), "ArrowUp")}
       </header>
-      {error && (
+      {data && (!canMutate || loading || !!diff && freshPreview!==previewKey) && <div className="gw-sync-status" role="status"><span>{loading || catalogLoading || previewLoading ? "Refreshing in background…" : "Showing saved view · Refresh to reconnect"}</span><small>Last loaded {syncTime(!!diff&&freshPreview!==previewKey?cachedPreview?.updatedAt||Date.now():liveSnapshot?.key===snapshotKey?liveSnapshot.updatedAt:cachedSnapshot?.updatedAt||Date.now())}</small></div>}
+      {warnings.length > 0 && <details className="gw-catalog-warnings"><summary role="status">Repository discovery incomplete · {warnings.length} notices</summary><div>{warnings.map((w,i) => <p key={i}>{w}</p>)}</div></details>}
+      {(error || catalogError) && (
         <div className="gw-error" role="alert">
-          {error}
-          <button onClick={() => setError("")} aria-label="Dismiss error">
+          {error || catalogError}
+          <button onClick={() => {setError("");setCatalogError("");}} aria-label="Dismiss error">
             ×
           </button>
         </div>
       )}
       {!repo ? (
-        <div className="gw-empty">
-          Choose a project above. Projects need a ready Git checkout in BB.
+        <div
+          className="gw-empty gw-checkout-setup"
+          role="status"
+          aria-live="polite"
+        >
+          <strong>{preparingCheckout ? "Preparing repository checkout…" : catalogLoading ? "Loading repositories…" : "Choose a repository"}</strong>
+          <p>{checkoutMessage || "Select a repository above. Missing checkouts can be prepared by selecting their setup action."}</p>
+          <button disabled={preparingCheckout} onClick={() => {if (setup) setSetup({...setup}); else setCheckoutRetry(v => v + 1);}}>Refresh / retry</button>
         </div>
       ) : (
-        <div className="gw-layout">
-          <aside className="gw-changes">
+        <div className={`gw-layout${tab === "Pull requests" ? " gw-layout-pr" : ""}`}>
+          {tab !== "Pull requests" && <aside className="gw-changes">
             <div className="gw-pane-title">
               <span>Commit</span>
               <button
@@ -652,10 +661,7 @@ function Workbench({ environment }: { environment?: { id: string } | null }) {
                 }
                 onClick={() => setTreeView((v) => !v)}
               >
-                <Icon
-                  name={treeView ? "Folder" : "List"}
-                  className="gw-icon"
-                />
+                <Icon name={treeView ? "Folder" : "List"} className="gw-icon" />
                 {treeView ? "Tree" : "List"}
               </button>
               <span className="gw-muted">
@@ -704,7 +710,7 @@ function Workbench({ environment }: { environment?: { id: string } | null }) {
               <div className="gw-toolbar">
                 <button
                   className="gw-primary"
-                  disabled={busy || !message.trim()}
+                  disabled={busy || !message.trim() || !canMutate}
                   onClick={() =>
                     amend
                       ? action("commit", message)
@@ -720,10 +726,10 @@ function Workbench({ environment }: { environment?: { id: string } | null }) {
                 {btn("Stash…", () => action("stash-save"))}
               </div>
             </div>
-          </aside>
-          <main className="gw-main">
+          </aside>}
+          <main className={`gw-main${tab === "Pull requests" ? " gw-main-pr" : ""}`}>
             <nav className="gw-tabs">
-              {["Log", "Worktrees", "Stash", "Remotes", "Console"].map((t) => (
+              {["Pull requests", "Log", "Worktrees", "Stash", "Remotes", "Console"].map((t) => (
                 <button
                   key={t}
                   className={tab === t ? "active" : ""}
@@ -756,6 +762,7 @@ function Workbench({ environment }: { environment?: { id: string } | null }) {
                   ).map((a) => (
                     <button
                       key={a}
+                      className={`gw-action-${gitButtonTone(title(a))}`}
                       onClick={(e) => {
                         e.currentTarget
                           .closest("details")
@@ -784,7 +791,7 @@ function Workbench({ environment }: { environment?: { id: string } | null }) {
                 </div>
               </details>
             </nav>
-            {tab === "Log" ? (
+            {tab === "Pull requests" ? (<PullRequests key={cacheKey("target",repo,worktreePath)} api={prApi} scope={repo + worktreePath} cacheScope={cacheKey("target",repo,worktreePath)} enabled={canMutate}/>) : tab === "Log" ? (
               <>
                 <div className="gw-filters">
                   <input
@@ -923,8 +930,7 @@ function Workbench({ environment }: { environment?: { id: string } | null }) {
                                   ) : (
                                     btn("Track branch", () =>
                                       action(
-                                        "branch-create",
-                                        r.name.split("/").slice(1).join("/"),
+                                        "checkout-remote",
                                         r.name,
                                       ),
                                     )
@@ -1130,7 +1136,7 @@ function Workbench({ environment }: { environment?: { id: string } | null }) {
                               patch: h,
                               flag: true,
                             });
-                          }),
+                          }, undefined, freshPreview!==previewKey),
                         )}
                       </div>
                     )}
@@ -1230,12 +1236,13 @@ function Workbench({ environment }: { environment?: { id: string } | null }) {
                 </span>
               )}
               <span>
-                {busy ? "Running Git…" : loading ? "Refreshing…" : "Ready"}
+                {busy ? "Running Git…" : loading || catalogLoading ? "Refreshing…" : canMutate ? "Ready" : "Saved view"}
               </span>
             </footer>
           </main>
         </div>
       )}
+      <CloneRepositoryDialog api={cloneApi} open={cloneOpen} onClose={()=>setCloneOpen(false)} onOpen={openClonedRepository} onActivityChange={setCloneActivity} preferredHostId={repos.find(r=>r.id===repo)?.hostId} canOpen={!busy&&!dialog&&!message.trim()} disabled={busy||preparingCheckout}/>
       {dialog && (
         <div
           className="gw-overlay"
@@ -1269,7 +1276,22 @@ function Workbench({ environment }: { environment?: { id: string } | null }) {
             <p className="gw-muted">
               {data?.branch} · {data?.root}
             </p>
+            {["checkout", "checkout-remote"].includes(dialog.action) && <>
+              <p>Checked out: <strong>{data?.branch}</strong>. The branch picker browses history only. Checkout changes files in this worktree.</p>
+              <label>Branch to check out
+                <select required autoFocus value={`${dialog.action === "checkout" ? "heads" : "remotes"}:${dialog.value}`} onChange={e => {
+                  const [kind, ...name] = e.target.value.split(":");
+                  setDialog({...dialog, action: kind === "heads" ? "checkout" : "checkout-remote", value:name.join(":"), extra:""});
+                }}>
+                  <option value="">Choose a branch…</option>
+                  {data?.refs.filter(r => ["heads","remotes"].includes(r.kind) && !r.name.endsWith("/HEAD")).map(r => <option key={`${r.kind}:${r.name}`} value={`${r.kind}:${r.name}`}>{r.kind === "heads" ? "Local" : "Remote"} · {r.name}</option>)}
+                </select>
+              </label>
+              {dialog.action === "checkout-remote" && <label>New local tracking branch name<input value={dialog.extra} required onChange={e => setDialog({...dialog, extra:e.target.value})}/></label>}
+              <p className="gw-muted">Local and ignored files remain protected. Remote checkout creates a new tracking branch; an existing name is refused.</p>
+            </>}
             {![
+              "checkout", "checkout-remote",
               "stage",
               "unstage",
               "discard",
@@ -1398,9 +1420,10 @@ function Workbench({ environment }: { environment?: { id: string } | null }) {
                 {error}
               </p>
             )}
-            <div className="gw-toolbar">
+            <div className="gw-toolbar gw-dialog-actions">
               <div className="gw-spacer" />
               <button
+                className="gw-secondary"
                 type="button"
                 disabled={busy}
                 onClick={() => setDialog(null)}
@@ -1408,10 +1431,10 @@ function Workbench({ environment }: { environment?: { id: string } | null }) {
                 Cancel
               </button>
               <button
-                className="gw-primary"
+                className={`gw-primary${destructive.includes(dialog.action)?" gw-destructive":""}`}
                 type="submit"
                 disabled={
-                  busy ||
+                  busy || !canMutate ||
                   (destructive.includes(dialog.action) && !dialog.confirmed)
                 }
               >

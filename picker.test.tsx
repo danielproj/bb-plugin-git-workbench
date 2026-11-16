@@ -268,3 +268,38 @@ test("selection preferences validate storage and restore only existing scopes", 
     dom.window.close();
   }
 });
+
+test("shared commit/PR tree preserves duplicate basename identity, viewed marks and collapse controls", async () => {
+  const dom = new JSDOM('<div id="shared"></div>');
+  Object.assign(globalThis,{window:dom.window,document:dom.window.document,HTMLElement:dom.window.HTMLElement,IS_REACT_ACT_ENVIRONMENT:true});
+  const {createRoot}=await import('react-dom/client');
+  const {FileTree}=await import('./file-tree');
+  const root=createRoot(document.getElementById('shared')!);
+  let picked='';
+  try {
+    await act(async()=>root.render(<FileTree paths={['a/index.ts','b/index.ts']} selected="b/index.ts" viewed={p=>p==='a/index.ts'} onSelect={p=>{picked=p}}/>));
+    assert.equal(document.querySelectorAll('.gw-tree-file').length,2);
+    assert.equal(document.querySelector('[title="b/index.ts"]')?.getAttribute('aria-pressed'),'true');
+    assert.match(document.querySelector('[title="a/index.ts"]')!.textContent!,/✓/);
+    await act(async()=> (document.querySelector('[title="b/index.ts"]') as HTMLButtonElement).click());
+    assert.equal(picked,'b/index.ts');
+    await act(async()=> [...document.querySelectorAll('button')].find(b=>b.textContent==='Collapse all')!.click());
+    assert.equal(document.querySelectorAll('.gw-tree-file').length,0);
+    await act(async()=> [...document.querySelectorAll('button')].find(b=>b.textContent==='Expand all')!.click());
+    assert.equal(document.querySelectorAll('.gw-tree-file').length,2);
+  } finally {await act(async()=>root.unmount());dom.window.close();}
+});
+
+test('repository preference migration never selects an ambiguous child or sibling', async()=>{
+ const {resolveSavedRepository,restoreScope}=await import('./preferences');
+ const rows=[{id:'repo:a',name:'same',path:'/a',hostId:'one',legacyIds:['source:a']},{id:'repo:b',name:'same',path:'/b',hostId:'two',legacyIds:['source:b']}];
+ assert.equal(resolveSavedRepository(rows,'source:b')?.id,'repo:b');
+ assert.equal(resolveSavedRepository(rows,'repo:a')?.path,'/a');
+ assert.equal(resolveSavedRepository(rows,'container'),undefined);
+ assert.equal(resolveSavedRepository(rows.slice(1),'repo:a'),undefined);
+ assert.equal(resolveSavedRepository(rows.map(r=>({...r,legacyIds:['ambiguous']})),'ambiguous'),undefined);
+ const data={worktrees:'worktree /b\nbranch refs/heads/main\n',refs:[{name:'main',kind:'heads'}]} as Snapshot;
+ const saved={projectId:'p',repo:'repo:a',worktreePath:'/a',branch:'refs/heads/main'};
+ assert.deepEqual(restoreScope(saved,'p','repo:b',data),{worktreePath:'',branch:''});
+ assert.deepEqual(restoreScope({...saved,repo:'repo:b',worktreePath:'/b'},'p','repo:b',data),{worktreePath:'/b',branch:'refs/heads/main'});
+});
