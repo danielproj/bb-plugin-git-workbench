@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { readPreference, savePreference, stringList } from "./preferences";
 import { filterOptions, type ChoiceOption } from "./selection";
 export function SearchPicker({
@@ -9,6 +9,7 @@ export function SearchPicker({
   onChange,
   disabled = false,
   visibilityKey,
+  action,
 }: {
   label: string;
   placeholder: string;
@@ -17,6 +18,7 @@ export function SearchPicker({
   onChange: (id: string) => void;
   disabled?: boolean;
   visibilityKey?: string;
+  action?: { label: string; icon?: ReactNode; disabled?: boolean; onSelect: () => void };
 }) {
   const [open, setOpen] = useState(false);
   const [search, setSearch] = useState("");
@@ -89,7 +91,7 @@ export function SearchPicker({
         <span>⌄</span>
       </button>
       {open && (
-        <div className="gw-picker-popup">
+        <div className={`gw-picker-popup${action ? " gw-picker-with-action" : ""}`}>
           <input
             autoFocus
             role="combobox"
@@ -186,6 +188,13 @@ export function SearchPicker({
             ))}
             {!filtered.length && <p className="gw-empty">No matches.</p>}
           </div>
+          {action && <div className="gw-picker-actions"><button
+            type="button"
+            className="gw-action-review"
+            disabled={disabled || action.disabled}
+            onClick={() => {setOpen(false);action.onSelect();}}
+            onKeyDown={e => {if(e.key==='Escape'){e.preventDefault();setOpen(false);root.current?.querySelector<HTMLButtonElement>('.gw-picker-trigger')?.focus();}}}
+          >{action.icon}{action.label}</button></div>}
         </div>
       )}
     </div>

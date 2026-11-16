@@ -38,6 +38,7 @@ test("picker supports typing, keyboard selection, no matches and Escape", async 
   const container = document.getElementById("app")!;
   const root = createRoot(container);
   let chosen = "";
+  let actions = 0;
   try {
     await act(async () =>
       root.render(
@@ -52,6 +53,7 @@ test("picker supports typing, keyboard selection, no matches and Escape", async 
           onChange={(v) => {
             chosen = v;
           }}
+          action={{label:"Clone repository…",onSelect:()=>{actions++;}}}
         />,
       ),
     );
@@ -105,6 +107,18 @@ test("picker supports typing, keyboard selection, no matches and Escape", async 
       ),
     );
     assert.equal(container.querySelector('[role="listbox"]'), null);
+    await act(async()=>container.querySelector('.gw-picker-trigger')!.dispatchEvent(new dom.window.MouseEvent('click',{bubbles:true})));
+    await act(async()=>{
+      const filter=container.querySelector('input')!;
+      Object.getOwnPropertyDescriptor(dom.window.HTMLInputElement.prototype,'value')!.set!.call(filter,'no matching repository');
+      filter.dispatchEvent(new dom.window.Event('input',{bubbles:true}));
+      filter.dispatchEvent(new dom.window.Event('change',{bubbles:true}));
+    });
+    assert.equal(container.querySelectorAll('[role=option]').length,0);
+    const action=container.querySelector<HTMLButtonElement>('.gw-picker-actions button')!;
+    assert.ok(action);assert.equal(action.closest('[role=listbox]'),null);
+    await act(async()=>action.click());
+    assert.equal(actions,1);assert.equal(chosen,'b');assert.equal(container.querySelector('.gw-picker-popup'),null);
   } finally {
     await act(async () => root.unmount());
     dom.window.close();

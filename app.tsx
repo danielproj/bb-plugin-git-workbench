@@ -574,6 +574,12 @@ export function Workbench({ environment }: { environment?: { id: string } | null
           placeholder="Choose repository…"
           value={repo || setup?.id || ""}
           disabled={busy}
+          action={{
+            label:cloneActivity==='working'?'Cloning…':cloneActivity==='ready'?'Open cloned repository…':cloneActivity==='attention'?'Clone progress…':'Clone repository…',
+            icon:<Icon name="Download" className="gw-icon"/>,
+            disabled:busy||preparingCheckout,
+            onSelect:()=>setCloneOpen(true),
+          }}
           options={[
             ...repos.map(r => ({id:r.id, label:r.name, detail:`${r.path} · ${r.hostName || r.hostId}${!catalogLoading&&!catalogVerified.includes(r.id)?" · Last seen":""}`, group:`${r.projectNames?.join(", ") || "Repositories"} · ${r.hostName || r.hostId}`})),
             ...candidates.map(c => ({id:c.id, label:`${c.name} · Prepare checkout`, detail:`${c.path || "Clone configured remote"} · ${c.hostName}`, group:`${c.projectName} · ${c.hostName}`}))
@@ -588,7 +594,6 @@ export function Workbench({ environment }: { environment?: { id: string } | null
             if (!candidate) {const r = repos.find(r => r.id === id); if (r) {setRepo(r.id); setProjectId(r.projectIds?.[0] || "");}}
           }}
         />
-        <button className="gw-action-review" disabled={busy||preparingCheckout} onClick={()=>setCloneOpen(true)}><Icon name="Download" className="gw-icon"/>{cloneActivity==='working'?'Cloning…':cloneActivity==='ready'?'Open cloned repository…':cloneActivity==='attention'?'Clone progress…':'Clone repository…'}</button>
         <SearchPicker
           label="Branch or worktree"
           visibilityKey="branch-groups"

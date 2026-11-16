@@ -973,7 +973,7 @@
 
 /* macOS-inspired web material: controls float above opaque working content. */
 .gw { --gw-primary:var(--gw-fg); --gw-radius:8px; font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif; }
-.gw-header { background:var(--gw-card); border-bottom:1px solid var(--gw-border); box-shadow:0 1px 0 color-mix(in srgb,var(--gw-fg) 8%,transparent); padding:8px 12px; gap:6px; }
+.gw-header { position:relative; z-index:20; background:var(--gw-card); border-bottom:1px solid var(--gw-border); box-shadow:0 1px 0 color-mix(in srgb,var(--gw-fg) 8%,transparent); padding:8px 12px; gap:6px; }
 .gw button { border-radius:6px; }
 .gw .gw-picker-trigger { min-height:32px; border-radius:var(--gw-radius); background:color-mix(in srgb,var(--gw-bg) 65%,transparent); box-shadow:inset 0 1px 0 color-mix(in srgb,var(--gw-fg) 8%,transparent); }
 .gw-picker-popup,.gw-dialog { background:var(--gw-card); border:1px solid var(--gw-border); border-radius:12px; box-shadow:0 16px 42px #0004,inset 0 1px 0 color-mix(in srgb,var(--gw-fg) 12%,transparent); }
@@ -1011,6 +1011,9 @@
 .gw :is(select,input:not([type=checkbox]):not([type=radio])){height:var(--gw-control-height);min-height:var(--gw-control-height);border-radius:7px;line-height:normal}
 .gw :is(.gw-header,.gw-toolbar,.pr-toolbar,.pr-file-tools,.pr-section-tabs,.pr-workflow-actions,.gw-dialog-actions)>button,.gw .gw-tabs>button,.gw .gw-picker-trigger{height:var(--gw-control-height);min-height:var(--gw-control-height);padding-top:5px;padding-bottom:5px;align-items:center;justify-content:center;white-space:nowrap}
 .gw .gw-picker-trigger{justify-content:flex-start}
+.gw-picker-actions{border-top:1px solid var(--gw-border);margin-top:7px;padding-top:7px}
+.gw-picker-with-action .gw-picker-results{max-height:272px}
+.gw .gw-picker-actions>button{width:100%;height:var(--gw-control-height);min-height:var(--gw-control-height);justify-content:flex-start;gap:8px;white-space:nowrap}
 .gw :is(.gw-menu,.pr-auto-merge)>summary{display:flex;align-items:center;justify-content:center;min-height:var(--gw-control-height);height:var(--gw-control-height);padding:5px 9px;line-height:1.25;border-radius:7px;box-sizing:border-box;cursor:pointer}
 .gw .pr-auto-merge>summary::after{content:'⌄';margin-left:5px}
 .gw .pr-file-tools>label{min-height:var(--gw-control-height);align-items:center}
