@@ -49,6 +49,10 @@ export default function plugin(bb: BbPluginApi) {
     cloneStatus: ({id})=>clones.status(id),
     prList: async ({environmentId,worktreePath,query},ctx) => {const {cwd,hostId}=await repository(environmentId,worktreePath);return host.call('prList',{cwd,query},{hostId,signal:ctx.experimental_signal,timeoutMs:180000});},
     prRead: async ({environmentId,worktreePath,read},ctx) => {const {cwd,hostId}=await repository(environmentId,worktreePath);return host.call('prRead',{cwd,read},{hostId,signal:ctx.experimental_signal,timeoutMs:180000});},
+    prImage: async ({environmentId,worktreePath,source},ctx) => {
+      const {cwd,hostId} = await repository(environmentId,worktreePath);
+      return host.call('prImage',{cwd,source},{hostId,signal:ctx.experimental_signal,timeoutMs:50000});
+    },
     prMutate: async ({environmentId,worktreePath,op},ctx) => {const {cwd,hostId}=await repository(environmentId,worktreePath);try{return await host.call('prMutate',{cwd,op},{hostId,signal:ctx.experimental_signal,timeoutMs:180000});}finally{bb.realtime.publish('changed',{environmentId});}},
     projects: async () =>
       (await bb.sdk.projects.list({ includePersonal: true })).map((p) => ({

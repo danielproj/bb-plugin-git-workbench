@@ -191,7 +191,7 @@ export function Workbench({ environment }: { environment?: { id: string } | null
   const refreshRef = useRef<()=>Promise<void>>(()=>Promise.resolve());
   prRpcRef.current = rpc;
   const cloneApi=useMemo<CloneApi>(()=>({options:()=>prRpcRef.current.call('cloneOptions',{}),start:input=>prRpcRef.current.call('cloneStart',input),status:id=>prRpcRef.current.call('cloneStatus',{id})}),[]);
-  const prApi = useMemo<PrApi>(() => ({list: query => prRpcRef.current.call("prList", {...target, query}), read: read => prRpcRef.current.call("prRead", {...target, read}), mutate: op => {
+  const prApi = useMemo<PrApi>(() => ({list: query => prRpcRef.current.call("prList", {...target, query}), read: read => prRpcRef.current.call("prRead", {...target, read}), image: source => prRpcRef.current.call("prImage", {...target, source}), mutate: op => {
     if (!mutationReady.current) return Promise.reject(Error("Wait for the repository refresh before applying an action."));
     mutationReady.current=false;generation.current++;readGeneration.current++;
     setFreshSnapshot("");

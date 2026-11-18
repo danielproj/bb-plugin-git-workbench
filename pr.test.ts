@@ -3,9 +3,36 @@ import assert from 'node:assert/strict';
 import {createPrService,validLine} from './pr-service';
 import {bounded,mergeReadiness,repositoryFromRemote} from './pr-provider';
 import {prMutation,prResult} from './pr-contract';
+import {readPrImage} from './pr-image-host';
+import {maxImageBytes,prImageUrl} from './pr-image-source';
 const head='a'.repeat(40),p={number:1,title:'Test',body:'',state:'open',html_url:'https://github.com/o/r/pull/1',url:'https://api.github.com/repos/o/r/pulls/1',issue_url:'https://api.github.com/repos/o/r/issues/1',draft:false,head:{sha:head,label:'o:branch'},base:{ref:'main'},user:{login:'author'},mergeable:true,mergeable_state:'clean'};
 function service(extra:(args:string[],body:any)=>any=()=>({})){const calls:any[]=[];const s=createPrService(async(_cwd,args,body)=>{calls.push({args,body});if(args[1]==='repos/o/r/pulls/1')return JSON.stringify(p);return JSON.stringify(extra(args,body));},async()=> 'git@github.com:o/r.git');return {s,calls};}
 test('remote normalization rejects arbitrary hosts and shell strings',()=>{assert.equal(repositoryFromRemote('https://github.com/o/r.git'),'o/r');assert.throws(()=>repositoryFromRemote('https://evil/o/r'));assert.throws(()=>repositoryFromRemote('$(id)'));});
+test('PR images use the authenticated GitHub contents API scoped to the selected repository', async () => {
+ const runGit = async () => 'git@github.com:o/r.git';
+ const jpeg = Buffer.from('ffd8ff000180', 'hex');
+ const source = prImageUrl(`/o/r/raw/${head}/docs/a%20b.jpg`, p.html_url, head)!;
+ const result = await readPrImage('.', source, undefined, runGit, async (_cwd, args) => {
+  assert.deepEqual(args, ['api', '--hostname', 'github.com', '--method', 'GET',
+   `repos/o/r/contents/docs/a%20b.jpg?ref=${head}`, '-H', 'Accept: application/vnd.github.raw']);
+  return jpeg;
+ });
+ assert.deepEqual(result, {mime:'image/jpeg',base64:jpeg.toString('base64')});
+ for (const url of [
+  `https://github.com/other/r/raw/${head}/image.jpg`,
+  `https://github.com.evil.example/o/r/raw/${head}/image.jpg`,
+  `https://github.com/o/r/raw/${head}/docs%2fimage.jpg`,
+ ]) {
+  await assert.rejects(readPrImage('.', url, undefined, runGit, async () => {
+   assert.fail('Unsupported destination reached authenticated transport');
+  }), /selected GitHub repository/);
+ }
+ const oversized = Buffer.alloc(maxImageBytes + 1);
+ jpeg.copy(oversized);
+ for (const invalid of [Buffer.from('<svg/>'), oversized]) {
+  await assert.rejects(readPrImage('.', source, undefined, runGit, async () => invalid), /Unsupported image/);
+ }
+});
 test('readiness fails closed for draft conflicts unknown and protected',()=>{assert.equal(mergeReadiness(p),null);for(const change of [{draft:true},{mergeable:null},{mergeable:false},{mergeable_state:'blocked'},{state:'closed'}])assert.ok(mergeReadiness({...p,...change}));});
 test('pagination never makes an incomplete set complete',()=>{assert.equal(bounded(Array(50).fill({})).coverageComplete,false);assert.equal(bounded([],2).coverageComplete,false);assert.equal(bounded([]).coverageComplete,true);});
 test('stale head rejects all writes before transport mutation',async()=>{const {s,calls}=service();await assert.rejects(s.mutate('.',prMutation.parse({action:'comment',confirmed:true,number:1,expectedHead:'b'.repeat(40),body:'hi'})),/STALE_HEAD/);assert.equal(calls.length,1);});

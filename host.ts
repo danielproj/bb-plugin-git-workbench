@@ -1,5 +1,6 @@
 import { scanRepositories, gitIdentity } from "./catalog-host";
 import { createPrService } from './pr-service';
+import { readPrImage } from './pr-image-host';
 const prs = createPrService();
 import { inspectCheckout, restoreCheckout } from "./checkout";
 import { realpath } from "node:fs/promises";
@@ -18,6 +19,7 @@ export default experimental_defineHostEntry({
     gitIdentity: ({ path }, ctx) => gitIdentity(path, ctx.signal),
     prList: ({cwd,query},ctx) => prs.list(cwd,query,ctx.signal),
     prRead: ({cwd,read},ctx) => prs.read(cwd,read,ctx.signal),
+    prImage: ({cwd,source},ctx) => readPrImage(cwd,source,ctx.signal),
     prMutate: async ({cwd,op},ctx) => {
       const key=(await git(cwd,['rev-parse','--path-format=absolute','--git-common-dir'],ctx.signal)).trim();
       const previous=locks.get(key)??Promise.resolve();

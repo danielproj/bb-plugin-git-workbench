@@ -92,6 +92,8 @@ Verification: local Git and fake mutation tests, live read-only GitHub schemas, 
 
 ## Pull request inbox
 
+Images in **About this change** appear inline. Repository images use GitHub CLI authentication on the repository's host and support PNG, JPEG, GIF and WebP up to 4 MiB. If a preview fails, **Open image** opens its source.
+
 Opening Pull requests shows a detailed, keyboard-accessible inbox. Rows show GitHub title/number, state, author initials, source → base, a plain-text description preview, up to ten labels, update date, and reported CI/review summaries. Choose a row to open Merge control; **Back to pull requests** preserves the search, state and page. Search is debounced by 300 ms. Changing a query hides old results until its response arrives. Open includes drafts; Closed excludes merged PRs; Merged and All have separate filters. Lists sort by recently updated, with at most 50 results per page. The page count is not an archive total.
 
 Inbox health uses one bounded GraphQL batch for the page, without fetching each PR's full checks or details. It is a reported aggregate, not merge readiness. Missing/failed hydration or a mismatched head shows unavailable health and keeps the PR selectable. A null rollup says “no checks reported”; it does not mean success. Review “not reported” does not mean approved. Selecting a PR loads authoritative detail and existing conservative merge guards. Labels and previews are intentionally capped; full content remains in detail/GitHub. GitHub search indexing and updates between list/detail reads can affect freshness.

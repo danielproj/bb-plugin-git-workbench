@@ -2,13 +2,51 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {JSDOM} from 'jsdom';
 import {act} from 'react';
-import {installTestPluginRuntime} from '@get-bb/plugin-sdk/testing/app';
+import {installTestPluginRuntime,renderSlot} from '@get-bb/plugin-sdk/testing/app';
 import {PullRequests, PatchDiff, splitPatch, blockers, studioHealth, type PrApi} from './pull-requests';
+import {PrDescription} from './pr-description';
 import type {PrResult} from './pr-contract';
 const sha='a'.repeat(40);
 const result:PrResult={items:[],coverageComplete:true,nextPage:null,text:'',truncated:false};
 installTestPluginRuntime();
 const detail:any={pr:{number:1,title:'Fix regression',body:'Description',state:'open',url:'https://github.com/a/b/pull/1',draft:false,head:sha,base:'main',branch:'fix',author:'author',mergeable:true,mergeState:'clean'},data:{},permissions:{viewerPermission:'WRITE',mergeCommitAllowed:true,squashMergeAllowed:true,rebaseMergeAllowed:true,pullRequest:{viewerDidAuthor:false,viewerCanClose:true,viewerCanReopen:true,viewerCanEnableAutoMerge:true,viewerCanDisableAutoMerge:false,reviewDecision:'APPROVED',reviewRequests:{nodes:[],pageInfo:{hasNextPage:false}}}}};
+test('PR description displays private Markdown images and safe HTML images with a link on failure', async () => {
+ const dom = new JSDOM('<div id="app"></div>', {url:'https://bb.example'});
+ Object.assign(globalThis, {window:dom.window,document:dom.window.document,IS_REACT_ACT_ENVIRONMENT:true});
+ const sources: string[] = [];
+ const body = [
+  `![Private][screenshot]`,
+  `[screenshot]: /a/b/raw/${sha}/docs/example.jpg`,
+  '<img src="https://example.com/public.png" alt="Public" onerror="alert(1)">',
+  '![Missing](docs/missing.jpg)',
+  '![Unsafe](javascript:alert%281%29)',
+ ].join('\n\n');
+ const slot = renderSlot({component:PrDescription}, {body,pullUrl:detail.pr.url,head:sha,load:async source => {
+   sources.push(source);
+   if (source.endsWith('missing.jpg')) throw Error('Not found');
+   return {mime:'image/jpeg',base64:'/9j/'};
+ }});
+ const box = slot.container;
+ try {
+  await slot.findByAltText('Private');
+  assert.deepEqual(sources, [
+   `https://github.com/a/b/raw/${sha}/docs/example.jpg`,
+   `https://github.com/a/b/raw/${sha}/docs/missing.jpg`,
+  ]);
+  assert.match(box.querySelector<HTMLImageElement>('img[alt="Private"]')!.src, /^blob:/);
+  const publicImage = box.querySelector<HTMLImageElement>('img[alt="Public"]')!;
+  assert.equal(publicImage.src, 'https://example.com/public.png');
+  assert.equal(publicImage.getAttribute('referrerpolicy'), 'no-referrer');
+  assert.equal(publicImage.hasAttribute('onerror'), false);
+  assert.equal(box.querySelector('img[alt="Unsafe"]'), null);
+  assert.match(box.querySelector('.pr-image-note')!.textContent!, /Missing · Open image/);
+  await act(async () => publicImage.dispatchEvent(new dom.window.Event('error')));
+  assert.ok(box.querySelector('a[href="https://example.com/public.png"]'));
+ } finally {
+  slot.lifecycle.unmount();
+  dom.window.close();
+ }
+});
 test('merge readiness refuses incomplete, pending required, stale and unresolved data',()=>{
  const data:Record<string,PrResult>={checks:{...result,checks:{head:sha,requiredCoverage:'complete',checkRuns:[],statuses:[],contexts:[]}},threads:{...result,threads:[]}};
  assert.deepEqual(blockers(detail,data),[]);

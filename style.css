@@ -762,6 +762,7 @@
 .pr-description-body{padding:0 14px 14px;max-height:320px;overflow:auto;font-size:13px;line-height:1.6;color:var(--gw-fg);min-width:0}
 .pr-description-body :where(h1,h2,h3,h4){font-size:14px;margin:12px 0 6px;font-weight:600}
 .pr-description-body :where(img,video){max-width:100%;height:auto}
+.pr-image-note{color:var(--gw-muted);font-size:12px}
 .pr-description-body pre{padding:10px;border-radius:7px;background:var(--gw-bg);overflow:auto}
 .pr-description-body :where(p,ul,ol){margin:8px 0}
 .pr-studio-grid{display:grid;grid-template-columns:minmax(170px,.7fr) minmax(0,2.35fr) minmax(230px,.95fr);gap:12px;align-items:start;flex:none;min-width:0;height:68vh;min-height:390px;max-height:1000px;overflow:hidden}

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { maxImageBytes } from './pr-image-source';
 const number = z.number().int().positive();
 const text = z.string().max(60000);
 const sha = z.string().regex(/^[a-f0-9]{40}$/i);
@@ -26,13 +27,21 @@ export const prResult=z.object({items:z.array(z.json()),coverageComplete:z.boole
 export const prMutationResult=prResult.extend({applied:z.literal(true),refreshError:z.string().optional()});
 export type PrResult=z.infer<typeof prResult>;
 const target={environmentId:z.string(),worktreePath:z.string().optional()};
+const imageSource = z.string().max(4096);
+const imageResult = z.object({
+ mime: z.enum(['image/png', 'image/jpeg', 'image/gif', 'image/webp']),
+ base64: z.string().max(4 * Math.ceil(maxImageBytes / 3)),
+});
+export type PrImage = z.infer<typeof imageResult>;
 export const prRpc={
  prList:{input:z.object({...target,query:prQuery}),output:prResult},
  prRead:{input:z.object({...target,read:prRead}),output:prResult},
+ prImage:{input:z.object({...target,source:imageSource}),output:imageResult},
  prMutate:{input:z.object({...target,op:prMutation}),output:prMutationResult},
 };
 export const prHostRpc={
  prList:{input:z.object({cwd:z.string(),query:prQuery}),output:prResult},
  prRead:{input:z.object({cwd:z.string(),read:prRead}),output:prResult},
+ prImage:{input:z.object({cwd:z.string(),source:imageSource}),output:imageResult},
  prMutate:{input:z.object({cwd:z.string(),op:prMutation}),output:prMutationResult},
 };

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Markdown } from '@get-bb/plugin-sdk/app';
+import { PrDescription, type LoadPrImage } from './pr-description';
 import { FileTree } from './file-tree';
 import { Checks } from './checks';
 import { prActionStyle } from './action-style';
@@ -7,7 +8,7 @@ import { z } from 'zod';
 import { prResult } from './pr-contract';
 import { viewCache, cacheKey, prViewSchema, syncTime } from './view-cache';
 import type { PrMutation, PrRead, PrResult, PrInboxSummary } from './pr-contract';
-export type PrApi={list:(query:{state:'open'|'closed'|'all';search:string;page:number})=>Promise<PrResult>;read:(read:PrRead)=>Promise<PrResult>;mutate:(op:PrMutation)=>Promise<PrResult & {applied:true;refreshError?:string}>};
+export type PrApi={list:(query:{state:'open'|'closed'|'all';search:string;page:number})=>Promise<PrResult>;read:(read:PrRead)=>Promise<PrResult>;image?:LoadPrImage;mutate:(op:PrMutation)=>Promise<PrResult & {applied:true;refreshError?:string}>};
 import { type Inline, type ReviewDraft, loadReview, saveReview, reviewPending, watchReviews, reserveReview, releaseReview, acknowledgeReview, reviewDeliveryWarning } from './review-drafts';
 export function blockers(d:PrResult['detail'], data:Record<string,PrResult>):string[]{
  if(!d)return ['Loading authoritative PR details'];
@@ -204,7 +205,7 @@ const blocked=blockers(detail,data);if(!canAct||!['checks','threads'].every(k=>f
     {health.slice(0,3).map(item=><button className="pr-status-pill" data-tone={item.tone} key={item.section} title={item.detail} onClick={()=>setSection(item.section)}><span aria-hidden="true">{item.symbol}</span>{item.label}</button>)}
     <span className="pr-file-totals">{data.files?`${files.length} files${data.files.coverageComplete?'':' loaded'}`:'Loading files…'}<span className="pr-added">+{added}</span><span className="pr-removed">−{removed}</span></span>
    </div>
-   <details className="pr-description pr-panel" key={`${number}:${p.head}`}><summary>About this change <span>Description & context</span></summary><div className="pr-description-body">{p.body?<Markdown className="pr-markdown" content={p.body}/>:<p>No description provided.</p>}</div></details>
+   <details className="pr-description pr-panel" key={`${number}:${p.head}`}><summary>About this change <span>Description & context</span></summary><div className="pr-description-body">{p.body?<PrDescription body={p.body} pullUrl={p.url} head={p.head} load={api.image}/>:<p>No description provided.</p>}</div></details>
    <div className="pr-canvas pr-studio-grid">
     <aside className="pr-files pr-panel" aria-label="Changed files">
      <div className="pr-panel-title"><strong>Changed files</strong><span>{data.files?`${files.length}${data.files.coverageComplete?'':'+'}`:'…'}</span></div>

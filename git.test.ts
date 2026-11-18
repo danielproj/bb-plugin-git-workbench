@@ -303,7 +303,7 @@ test("imports only public SDK and declared React surface", async () => {
   const { experimental_scanPublicSdkOnly } =
     await import("@get-bb/plugin-sdk/testing");
   const report = experimental_scanPublicSdkOnly(process.cwd(), {
-    allow: [/^react$/, /^react-dom\/client$/, /^jsdom$/],
+    allow: [/^react$/, /^react-dom\/client$/, /^jsdom$/, /^(react-markdown|rehype-raw|rehype-sanitize|remark-gfm)$/],
   });
   assert.deepEqual(report.violations, []);
   assert.deepEqual(report.privateDependencies, []);
